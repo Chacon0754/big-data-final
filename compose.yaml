@@ -14,9 +14,9 @@ x-worker: &worker
     - /opt/spark/bin/spark-class
     - org.apache.spark.deploy.worker.Worker
     - --cores
-    - "1"
+    - "2"
     - --memory
-    - 2g
+    - 3g
     - spark://spark-master:7077
   healthcheck:
     test: [ "CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', 8081), timeout=3).close()" ]
