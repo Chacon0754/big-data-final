@@ -7,7 +7,9 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from urllib.request import urlopen
 
-from airflow.sdk import Param, dag, get_current_context, task
+from airflow.sdk import Param, TaskGroup, dag, get_current_context, task
+
+from src.mobility_stages import STAGES, stage_notebook
 
 from src.tlc_period import MONTH_PATTERN, configured_months, month_range
 
@@ -98,7 +100,7 @@ def mobility_pipeline() -> None:
         )
 
     @task(execution_timeout=timedelta(hours=2))
-    def run_spark_notebook() -> str:
+    def run_notebook_stage(stage: str) -> str:
         context = get_current_context()
         run_id: str = context["run_id"]
         dag_run = context["dag_run"]
@@ -108,13 +110,18 @@ def mobility_pipeline() -> None:
         run_dir.mkdir(parents=True, exist_ok=True)
 
         source: Path = WORKSPACE / "notebooks" / "01_nyc_taxi_analysis.ipynb"
-        executed: Path = run_dir / "01_nyc_taxi_analysis.executed.ipynb"
+        analysis_dir: Path = run_dir / "analysis"
+        notebooks_dir: Path = run_dir / "notebooks"
+        stage_source: Path = notebooks_dir / f"{stage}.ipynb"
+        executed: Path = notebooks_dir / f"{stage}.executed.ipynb"
         report_path: Path = run_dir / f"{run_id}.json"
+        output: Path = analysis_dir / STAGES[stage] if STAGES[stage] else report_path
+        stage_notebook(source, stage_source, stage)
 
         subprocess.run(
             [
                 str(NOTEBOOK_BIN / "papermill"),
-                str(source), str(executed),
+                str(stage_source), str(executed),
                 "--kernel", "spark-python3",
                 "--cwd", str(WORKSPACE),
                 "--log-output", "--no-progress-bar",
@@ -127,17 +134,18 @@ def mobility_pipeline() -> None:
                 "TLC_DAG_RUN_ID": run_id,
                 "TLC_DAG_RUN_STARTED_AT": started_at.astimezone(timezone.utc).isoformat(),
                 "SPARK_CONSOLE_PROGRESS": "false",
+                "MOBILITY_ANALYSIS_DIR": str(analysis_dir),
                 "MOBILITY_REPORT_PATH": str(report_path),
             },
             stderr=subprocess.STDOUT,
             check=True,
         )
 
-        if not report_path.is_file():
-            raise FileNotFoundError(report_path)
+        if not output.is_file():
+            raise FileNotFoundError(output)
 
         print(f"Executed notebook: {executed}", flush=True)
-        return str(report_path)
+        return str(output)
 
     @task
     def publish_to_mongo(report_path: str) -> None:
@@ -152,9 +160,13 @@ def mobility_pipeline() -> None:
         )
 
     ingestion = ingest_tlc()
-    report_path = run_spark_notebook()
-    ingestion >> report_path
-    publish_to_mongo(report_path)
+    with TaskGroup(group_id="run_spark_notebook", tooltip="Prepare, analyze and export"):
+        prepared = run_notebook_stage.override(task_id="prepare_trips")("prepare_trips")
+        demand = run_notebook_stage.override(task_id="analyze_demand")("analyze_demand")
+        metrics = run_notebook_stage.override(task_id="analyze_trip_metrics")("analyze_trip_metrics")
+        report_path = run_notebook_stage.override(task_id="export_report")("export_report")
+    publication = publish_to_mongo(report_path)
+    ingestion >> prepared >> demand >> metrics >> report_path >> publication
 
 
 nyc_taxi_mobility = mobility_pipeline()
