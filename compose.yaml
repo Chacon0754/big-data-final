@@ -82,3 +82,19 @@ services:
         condition: service_healthy
       spark-worker-3:
         condition: service_healthy
+
+  mongodb:
+    image: mongo:8.0
+    ports:
+      - "127.0.0.1:27087:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./data/processed:/imports:ro
+    healthcheck:
+      test: [ "CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand({ping: 1}).ok === 1 ? 0 : 1)" ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mongo_data:
