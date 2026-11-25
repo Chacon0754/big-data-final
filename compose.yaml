@@ -122,8 +122,8 @@ services:
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
       SPARK_DRIVER_HOST: airflow
       PYSPARK_PYTHON: /usr/bin/python3
-      TLC_ANALYSIS_YEAR: "2026"
-      TLC_LAST_MONTH: "9"
+      TLC_START_MONTH: "2026-01"
+      TLC_END_MONTH: "2026-09"
       MONGO_URI: mongodb://mongodb:27017
     ports:
       - "127.0.0.1:18089:8080"

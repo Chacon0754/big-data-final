@@ -16,15 +16,33 @@ BLUE = "#167D98"
 DAY_NAMES = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
 
 
+def mongo_client(mongo_uri: str) -> MongoClient[Document]:
+    return MongoClient(mongo_uri, serverSelectionTimeoutMS=5_000)
+
+
+def report_periods(mongo_uri: str) -> dict[str, str]:
+    with mongo_client(mongo_uri) as client:
+        periods = client["nyc_taxi"]["mobility_reports"].find(
+            {}, {"period_start": 1, "period_end_exclusive": 1, "dag_run_id": 1}
+        ).sort([
+            ("dag_run_started_at", -1),
+            ("period_end_exclusive", -1),
+            ("period_start", -1),
+            ("_id", -1),
+        ])
+        labels: dict[str, str] = {}
+        for period in periods:
+            start: date = date.fromisoformat(period["period_start"])
+            end: date = date.fromisoformat(period["period_end_exclusive"]) - timedelta(days=1)
+            run_label: str = period.get("dag_run_id") or "Reporte manual"
+            labels[period["_id"]] = f"{start:%d/%m/%Y} al {end:%d/%m/%Y} · {run_label}"
+        return labels
+
+
 @st.cache_data(ttl=60, show_spinner=False)
-def load_report(mongo_uri: str) -> Document | None:
-    client: MongoClient[Document] = MongoClient(
-        mongo_uri, serverSelectionTimeoutMS=5_000
-    )
-    with client:
-        return client["nyc_taxi"]["mobility_reports"].find_one(
-            sort=[("period_end_exclusive", -1), ("_id", -1)]
-        )
+def load_report(mongo_uri: str, report_id: str) -> Document | None:
+    with mongo_client(mongo_uri) as client:
+        return client["nyc_taxi"]["mobility_reports"].find_one({"_id": report_id})
 
 
 def show_demand(tables: dict[str, list[Document]]) -> None:
@@ -71,6 +89,21 @@ def show_demand(tables: dict[str, list[Document]]) -> None:
         st.subheader("Entre semana y fin de semana")
         st.line_chart(profile, x="Hora", y="Viajes por día", color="Tipo de día")
         st.caption("Promedio por día de cada grupo para cada hora.")
+
+    monthly: pd.DataFrame = pd.DataFrame(tables["trips_by_pickup_month"])
+    monthly["month"] = pd.to_datetime(monthly["pickup_month"], format="%Y-%m")
+    st.subheader("Viajes por mes")
+    st.altair_chart(
+        alt.Chart(monthly).mark_line(point=True, color=AMBER).encode(
+            x=alt.X("month:T", title="Mes", axis=alt.Axis(format="%Y-%m")),
+            y=alt.Y("trip_count:Q", title="Viajes"),
+            tooltip=[
+                alt.Tooltip("pickup_month:N", title="Mes"),
+                alt.Tooltip("trip_count:Q", title="Viajes", format=",d"),
+            ],
+        ),
+        width="stretch",
+    )
 
 
 def show_zones(tables: dict[str, list[Document]]) -> None:
@@ -212,19 +245,32 @@ def main() -> None:
 
     mongo_uri: str = os.environ.get("MONGO_URI", "mongodb://127.0.0.1:27087")
     try:
-        report = load_report(mongo_uri)
+        periods: dict[str, str] = report_periods(mongo_uri)
+        if not periods:
+            st.info("Publica el reporte de Spark en MongoDB para ver los indicadores.")
+            return
+
+        selected: str | None = st.selectbox(
+            "Corrida de análisis",
+            [None, *periods],
+            format_func=lambda run: "Última corrida disponible" if run is None else periods[run],
+        )
+        report_id: str = selected if selected is not None else next(iter(periods))
+        report: Document | None = load_report(mongo_uri, report_id)
     except PyMongoError:
         st.error("No se pudo conectar a MongoDB. Comprueba que el servicio esté activo.")
         return
 
     if report is None:
-        st.info("Publica el reporte de Spark en MongoDB para ver los indicadores.")
+        st.info("El reporte seleccionado ya no está disponible.")
         return
 
     tables: dict[str, list[Document]] = report["indicators"]
     start: date = date.fromisoformat(report["period_start"])
     end: date = date.fromisoformat(report["period_end_exclusive"]) - timedelta(days=1)
     st.caption(f"NYC TLC · Yellow Taxi · {start:%d/%m/%Y} al {end:%d/%m/%Y}")
+    if report.get("dag_run_id"):
+        st.caption(f"Corrida de Airflow · `{report['dag_run_id']}`")
 
     peak: Document = max(tables["demand_by_hour"], key=lambda row: row["trip_count"])
     total_usd: Decimal = sum(

@@ -7,11 +7,14 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from urllib.request import urlopen
 
-from airflow.sdk import dag, get_current_context, task
+from airflow.sdk import Param, dag, get_current_context, task
+
+from src.tlc_period import MONTH_PATTERN, configured_months, month_range
 
 WORKSPACE = Path("/workspace")
 TLC_BASE = "https://d37ci6vzurychx.cloudfront.net"
 NOTEBOOK_BIN = Path("/opt/notebook-venv/bin")
+DEFAULT_START_MONTH, DEFAULT_END_MONTH = configured_months()
 
 
 def is_valid_input(path: Path) -> bool:
@@ -60,6 +63,16 @@ def fetch_input(url: str, path: Path) -> None:
     schedule=None,
     catchup=False,
     max_active_runs=1,
+    params={
+        "start_month": Param(
+            DEFAULT_START_MONTH, type="string", pattern=MONTH_PATTERN,
+            title="Mes inicial (AAAA-MM)",
+        ),
+        "end_month": Param(
+            DEFAULT_END_MONTH, type="string", pattern=MONTH_PATTERN,
+            title="Mes final incluido (AAAA-MM)",
+        ),
+    },
     is_paused_upon_creation=False,
     default_args={"retries": 1, "retry_delay": timedelta(seconds=30)},
     tags=["nyc-taxi", "spark", "mongodb"],
@@ -67,31 +80,36 @@ def fetch_input(url: str, path: Path) -> None:
 def mobility_pipeline() -> None:
     @task
     def ingest_tlc() -> None:
-        year: int = int(os.environ.get("TLC_ANALYSIS_YEAR", "2026"))
-        last_month: int = int(os.environ.get("TLC_LAST_MONTH", "9"))
-        if not 1 <= last_month <= 12:
-            raise ValueError("TLC_LAST_MONTH must be between 1 and 12")
+        params = get_current_context()["params"]
+        _, _, source_months = month_range(params["start_month"], params["end_month"])
+        print(
+            f"Ingesting {len(source_months)} month(s): {source_months[0]} through {source_months[-1]}"
+        )
 
         raw_dir: Path = WORKSPACE / "data" / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
 
-        for month in range(1, last_month + 1):
-            file_name: str = f"yellow_tripdata_{year}-{month:02d}.parquet"
+        for month in source_months:
+            file_name: str = f"yellow_tripdata_{month}.parquet"
             fetch_input(f"{TLC_BASE}/trip-data/{file_name}", raw_dir / file_name)
 
         fetch_input(
             f"{TLC_BASE}/misc/taxi_zone_lookup.csv", raw_dir / "taxi_zone_lookup.csv"
         )
 
-    @task(execution_timeout=timedelta(minutes=45))
+    @task(execution_timeout=timedelta(hours=2))
     def run_spark_notebook() -> str:
-        run_id: str = get_current_context()["run_id"]
+        context = get_current_context()
+        run_id: str = context["run_id"]
+        dag_run = context["dag_run"]
+        started_at: datetime = dag_run.start_date or dag_run.run_after
+        params = context["params"]
         run_dir: Path = WORKSPACE / "data" / "processed" / "airflow" / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
         source: Path = WORKSPACE / "notebooks" / "01_nyc_taxi_analysis.ipynb"
         executed: Path = run_dir / "01_nyc_taxi_analysis.executed.ipynb"
-        report_path: Path = run_dir / "mobility_report.json"
+        report_path: Path = run_dir / f"{run_id}.json"
 
         subprocess.run(
             [
@@ -100,10 +118,18 @@ def mobility_pipeline() -> None:
                 "--kernel", "spark-python3",
                 "--cwd", str(WORKSPACE),
                 "--log-output", "--no-progress-bar",
-                "--execution-timeout", "900",
             ],
             cwd=WORKSPACE,
-            env={**os.environ, "MOBILITY_REPORT_PATH": str(report_path)},
+            env={
+                **os.environ,
+                "TLC_START_MONTH": params["start_month"],
+                "TLC_END_MONTH": params["end_month"],
+                "TLC_DAG_RUN_ID": run_id,
+                "TLC_DAG_RUN_STARTED_AT": started_at.astimezone(timezone.utc).isoformat(),
+                "SPARK_CONSOLE_PROGRESS": "false",
+                "MOBILITY_REPORT_PATH": str(report_path),
+            },
+            stderr=subprocess.STDOUT,
             check=True,
         )
 

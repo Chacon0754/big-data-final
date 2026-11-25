@@ -12,6 +12,5 @@ RUN /usr/bin/python3 -m venv /opt/airflow-venv \
 
 ENV AIRFLOW_HOME=/opt/airflow-state
 ENV PATH="/opt/airflow-venv/bin:${PATH}"
-ENV PYTHONPATH="/workspace:${PYTHONPATH}"
 
 USER 185

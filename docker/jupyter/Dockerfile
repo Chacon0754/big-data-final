@@ -13,7 +13,7 @@ RUN python3 -m venv /opt/notebook-venv \
     && ln -s "$1" /opt/spark-py4j.zip
 
 ENV PATH="/opt/notebook-venv/bin:${PATH}"
-ENV PYTHONPATH="/opt/spark/python:/opt/spark-py4j.zip"
+ENV PYTHONPATH="/workspace:/opt/spark/python:/opt/spark-py4j.zip"
 
 RUN install -d -m 0700 -o 185 \
     /opt/jupyter-state \
