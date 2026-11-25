@@ -96,5 +96,15 @@ services:
       timeout: 5s
       retries: 20
 
+  dashboard:
+    build: ./dashboard
+    environment:
+      MONGO_URI: mongodb://mongodb:27017
+    ports:
+      - "127.0.0.1:18501:8501"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
 volumes:
   mongo_data:
