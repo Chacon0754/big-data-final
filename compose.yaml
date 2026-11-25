@@ -106,5 +106,43 @@ services:
       mongodb:
         condition: service_healthy
 
+  airflow:
+    build:
+      context: ./docker/airflow
+      additional_contexts:
+        spark_notebook: service:jupyter
+    hostname: airflow
+    command: [ "airflow", "standalone" ]
+    environment:
+      AIRFLOW__API__HOST: "0.0.0.0"
+      AIRFLOW__CORE__DAGS_FOLDER: /workspace/dags
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__PARALLELISM: "4"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
+      SPARK_DRIVER_HOST: airflow
+      PYSPARK_PYTHON: /usr/bin/python3
+      TLC_ANALYSIS_YEAR: "2026"
+      TLC_LAST_MONTH: "9"
+      MONGO_URI: mongodb://mongodb:27017
+    ports:
+      - "127.0.0.1:18089:8080"
+    volumes:
+      - ./dags:/workspace/dags:ro
+      - ./notebooks:/workspace/notebooks:ro
+      - ./src:/workspace/src:ro
+      - ./data:/workspace/data
+      - airflow_data:/opt/airflow-state
+    depends_on:
+      spark-worker-1:
+        condition: service_healthy
+      spark-worker-2:
+        condition: service_healthy
+      spark-worker-3:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
 volumes:
   mongo_data:
+  airflow_data:
